@@ -10,7 +10,8 @@ import (
 
 	"golang.org/x/net/context"
 
-	etcd "github.com/coreos/etcd/client"
+	etcd "github.com/coreos/etcd/clientv3"
+	etcdErr "github.com/coreos/etcd/error"
 )
 
 // ForTestParams is the way to create a customized DataSource to be
@@ -40,11 +41,11 @@ func etcdClietForTest() (etcd.Client, error) {
 	etcdFlag := os.Getenv("ETCD_ENDPOINT")
 
 	etcdClient, err := etcd.New(etcd.Config{
-		Endpoints:               strings.Split(etcdFlag, ","),
-		HeaderTimeoutPerRequest: 5 * time.Second,
+		Endpoints:   strings.Split(etcdFlag, ","),
+		DialTimeout: 5 * time.Second,
 	})
 
-	return etcdClient, err
+	return *etcdClient, err
 }
 
 // ForTest constructs a DataSource to be used in tests
@@ -96,13 +97,10 @@ func ForTest(params *ForTestParams) (DataSource, error) {
 		return nil, fmt.Errorf("etcd instance not found: %s", err)
 	}
 
-	kapi := etcd.NewKeysAPI(etcdClient)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err = kapi.Delete(ctx, clusterNameFlag,
-		&etcd.DeleteOptions{Dir: true, Recursive: true})
-	if err != nil && !etcd.IsKeyNotFound(err) {
+	_, err = etcdClient.Delete(ctx, clusterNameFlag)
+	if err != nil && !(err.(*etcdErr.Error).ErrorCode == etcdErr.EcodeKeyNotFound) {
 		return nil, fmt.Errorf("error while purging previous data from etcd: %s", err)
 	}
 
@@ -117,7 +115,6 @@ func ForTest(params *ForTestParams) (DataSource, error) {
 	}
 
 	etcdDataSource, err := NewEtcdDataSource(
-		kapi,
 		etcdClient,
 		leaseStart,
 		leaseRange,

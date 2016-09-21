@@ -11,7 +11,8 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	etcd "github.com/coreos/etcd/client"
+	etcd "github.com/coreos/etcd/clientv3"
+	etcdErr "github.com/coreos/etcd/error"
 	"golang.org/x/net/context"
 	"gopkg.in/yaml.v2"
 )
@@ -27,7 +28,6 @@ const (
 // datasource
 // Implements MasterDataSource interface
 type EtcdDataSource struct {
-	keysAPI         etcd.KeysAPI
 	client          etcd.Client
 	leaseStart      net.IP
 	leaseRange      int
@@ -51,15 +51,15 @@ func (ds *EtcdDataSource) MachineInterfaces() ([]MachineInterface, error) {
 
 	var ret []MachineInterface
 
-	response, err := ds.keysAPI.Get(ctx, path.Join(ds.clusterName, etcdMachinesDirName), &etcd.GetOptions{Recursive: false})
+	response, err := ds.client.Get(ctx, path.Join(ds.clusterName, etcdMachinesDirName))
 	if err != nil {
-		if etcd.IsKeyNotFound(err) {
+		if err.(*etcdErr.Error).ErrorCode == etcdErr.EcodeKeyNotFound {
 			return ret, nil
 		}
 		return nil, err
 	}
-	for _, ent := range response.Node.Nodes {
-		pathToMachineDir := ent.Key
+	for _, ent := range response.Kvs {
+		pathToMachineDir := string(ent.Key)
 		machineName := pathToMachineDir[strings.LastIndex(pathToMachineDir, "/")+1:]
 		macAddr, err := macFromName(machineName)
 		if err != nil {
@@ -73,9 +73,9 @@ func (ds *EtcdDataSource) MachineInterfaces() ([]MachineInterface, error) {
 // MachineInterface returns the MachineInterface associated with the given mac
 func (ds *EtcdDataSource) MachineInterface(mac net.HardwareAddr) MachineInterface {
 	return &etcdMachineInterface{
-		mac:     mac,
-		etcdDS:  ds,
-		keysAPI: ds.keysAPI,
+		mac:    mac,
+		etcdDS: ds,
+		client: ds.client,
 	}
 }
 
@@ -89,18 +89,18 @@ func (ds *EtcdDataSource) get(keyPath string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	response, err := ds.keysAPI.Get(ctx, keyPath, nil)
+	response, err := ds.client.Get(ctx, keyPath, nil)
 	if err != nil {
 		return "", err
 	}
-	return response.Node.Value, nil
+	return string(response.Kvs[0].Value), nil
 }
 
 // set expects absolute key path
 func (ds *EtcdDataSource) set(keyPath string, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := ds.keysAPI.Set(ctx, keyPath, value, nil)
+	_, err := ds.client.Put(ctx, keyPath, value, nil)
 	return err
 }
 
@@ -108,7 +108,7 @@ func (ds *EtcdDataSource) set(keyPath string, value string) error {
 func (ds *EtcdDataSource) delete(keyPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := ds.keysAPI.Delete(ctx, keyPath, nil)
+	_, err := ds.client.Delete(ctx, keyPath, nil)
 	return err
 }
 
@@ -121,18 +121,15 @@ func (ds *EtcdDataSource) listNonDirKeyValues(dir string) (map[string]string, er
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	response, err := ds.keysAPI.Get(ctx, dir, nil)
+	response, err := ds.client.Get(ctx, dir, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	flags := make(map[string]string)
-	for _, n := range response.Node.Nodes {
-		if n.Dir {
-			continue
-		}
-		_, k := path.Split(n.Key)
-		flags[k] = n.Value
+	for _, n := range response.Kvs {
+		_, k := path.Split(string(n.Key))
+		flags[k] = string(n.Value)
 	}
 
 	return flags, nil
@@ -170,11 +167,11 @@ func (ds *EtcdDataSource) ClusterName() string {
 // EtcdMembers returns a string suitable for `-initial-cluster`
 // This is the etcd the Blacksmith instance is using as its datastore
 func (ds *EtcdDataSource) EtcdMembers() (string, error) {
-	membersAPI := etcd.NewMembersAPI(ds.client)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	members, err := membersAPI.List(ctx)
+	membersResponse, err := ds.client.MemberList(ctx)
+	members := membersResponse.Members
 
 	if err != nil {
 		return "", fmt.Errorf("Error while checking etcd members: %s", err)
@@ -192,7 +189,7 @@ func (ds *EtcdDataSource) EtcdMembers() (string, error) {
 
 // NewEtcdDataSource gives blacksmith the ability to use an etcd endpoint as
 // a MasterDataSource
-func NewEtcdDataSource(kapi etcd.KeysAPI, client etcd.Client, leaseStart net.IP,
+func NewEtcdDataSource(client etcd.Client, leaseStart net.IP,
 	leaseRange int, clusterName, workspacePath string, defaultNameServers []string,
 	selfInfo InstanceInfo) (DataSource, error) {
 
@@ -208,7 +205,6 @@ func NewEtcdDataSource(kapi etcd.KeysAPI, client etcd.Client, leaseStart net.IP,
 	}
 
 	ds := &EtcdDataSource{
-		keysAPI:         kapi,
 		client:          client,
 		clusterName:     clusterName,
 		leaseStart:      leaseStart,
@@ -243,11 +239,11 @@ func NewEtcdDataSource(kapi etcd.KeysAPI, client etcd.Client, leaseStart net.IP,
 	// TODO: Integrate DNS service into Blacksmith
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel2()
-	ds.keysAPI.Set(ctx2, "skydns", "", &etcd.SetOptions{Dir: true})
+	ds.client.Put(ctx2, "skydns", "")
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel3()
-	ds.keysAPI.Set(ctx3, "skydns/"+ds.clusterName, "", &etcd.SetOptions{Dir: true})
+	ds.client.Put(ctx3, "skydns/"+ds.clusterName, "")
 	var quoteEnclosedNameservers []string
 	for _, v := range defaultNameServers {
 		quoteEnclosedNameservers = append(quoteEnclosedNameservers, fmt.Sprintf(`"%s:53"`, v))
@@ -257,7 +253,7 @@ func NewEtcdDataSource(kapi etcd.KeysAPI, client etcd.Client, leaseStart net.IP,
 	skydnsconfig := fmt.Sprintf(`{"dns_addr":"0.0.0.0:53","nameservers":[%s],"domain":"%s."}`, commaSeparatedQouteEnclosedNameservers, clusterName)
 	ctx4, cancel4 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel4()
-	ds.keysAPI.Set(ctx4, "skydns/config", skydnsconfig, nil)
+	ds.client.Put(ctx4, "skydns/config", skydnsconfig, nil)
 
 	_, err = ds.MachineInterface(selfInfo.Nic).Machine(true, selfInfo.IP)
 	if err != nil {

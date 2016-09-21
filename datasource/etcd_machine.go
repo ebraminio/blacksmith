@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	etcd "github.com/coreos/etcd/client"
+	etcd "github.com/coreos/etcd/clientv3"
+	etcdErr "github.com/coreos/etcd/error"
 	"github.com/krolaw/dhcp4"
 	"golang.org/x/net/context"
 )
@@ -19,9 +20,9 @@ import (
 // etcdMachineInterface implements datasource.MachineInterface
 // interface using etcd as it's datasource
 type etcdMachineInterface struct {
-	mac     net.HardwareAddr
-	etcdDS  *EtcdDataSource
-	keysAPI etcd.KeysAPI
+	mac    net.HardwareAddr
+	etcdDS *EtcdDataSource
+	client etcd.Client
 }
 
 // Mac returns the hardware address of the associated machine
@@ -57,9 +58,8 @@ func (m *etcdMachineInterface) Machine(createIfNeeded bool,
 
 	resp, err := m.selfGet("_machine")
 	if err != nil {
-		errorIsKeyNotFound := etcd.IsKeyNotFound(err)
 
-		if !(errorIsKeyNotFound && createIfNeeded) {
+		if !((err.(*etcdErr.Error).ErrorCode == etcdErr.EcodeKeyNotFound) && createIfNeeded) {
 			return machine, fmt.Errorf("error while retrieving _machine: %s", err)
 		}
 
@@ -175,9 +175,9 @@ func (m *etcdMachineInterface) LastSeen() (int64, error) {
 func (m *etcdMachineInterface) DeleteMachine() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := m.etcdDS.keysAPI.Delete(ctx,
+	_, err := m.etcdDS.client.Delete(ctx,
 		path.Join(m.etcdDS.ClusterName(), etcdMachinesDirName, m.Hostname()),
-		&etcd.DeleteOptions{Dir: true, Recursive: true})
+		etcd.WithPrefix())
 	return err
 }
 
@@ -187,16 +187,16 @@ func (m *etcdMachineInterface) ListVariables() (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	response, err := m.keysAPI.Get(ctx, path.Join(m.etcdDS.ClusterName(),
+	response, err := m.client.Get(ctx, path.Join(m.etcdDS.ClusterName(),
 		"machines", m.Hostname()), nil)
 	if err != nil {
 		return nil, err
 	}
 
 	flags := make(map[string]string)
-	for i := range response.Node.Nodes {
-		_, k := path.Split(response.Node.Nodes[i].Key)
-		flags[k] = response.Node.Nodes[i].Value
+	for _, kv := range response.Kvs {
+		_, k := path.Split(string(kv.Key))
+		flags[k] = string(kv.Value)
 	}
 
 	return flags, nil
@@ -208,7 +208,7 @@ func (m *etcdMachineInterface) GetVariable(key string) (string, error) {
 	value, err := m.selfGet(key)
 
 	if err != nil {
-		if !etcd.IsKeyNotFound(err) {
+		if !(err.(*etcdErr.Error).ErrorCode == etcdErr.EcodeKeyNotFound) {
 			return "", fmt.Errorf(
 				"error while getting variable key=%s for machine=%s: %s",
 				key, m.mac, err)
@@ -217,7 +217,7 @@ func (m *etcdMachineInterface) GetVariable(key string) (string, error) {
 		// Key was not found for the machine
 		value, err := m.etcdDS.GetClusterVariable(key)
 		if err != nil {
-			if !etcd.IsKeyNotFound(err) {
+			if !(err.(*etcdErr.Error).ErrorCode == etcdErr.EcodeKeyNotFound) {
 				return "", fmt.Errorf(
 					"error while getting variable key=%s for machine=%s (global check): %s",
 					key, m.mac, err)

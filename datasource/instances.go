@@ -7,7 +7,6 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	etcd "github.com/coreos/etcd/client"
 	"golang.org/x/net/context"
 )
 
@@ -25,27 +24,20 @@ const (
 func (ds *EtcdDataSource) registerOnEtcd() error {
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	masterOrderOption := etcd.CreateInOrderOptions{
-		TTL: masterTTLTime,
-	}
-	resp, err := ds.keysAPI.CreateInOrder(ctx, path.Join(ds.ClusterName(), instancesEtcdDir),
-		ds.selfInfo.String(), &masterOrderOption)
+	key := path.Join(ds.ClusterName())
+	_, err := ds.client.Put(ctx, key, ds.selfInfo.String())
 	if err != nil {
 		return err
 	}
 
-	ds.instanceEtcdKey = resp.Node.Key
+	ds.instanceEtcdKey = key
 	return nil
 }
 
 func (ds *EtcdDataSource) etcdHeartbeat() error {
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	masterSetOption := etcd.SetOptions{
-		PrevExist: etcd.PrevExist,
-		TTL:       masterTTLTime,
-	}
-	_, err := ds.keysAPI.Set(ctx, ds.instanceEtcdKey, ds.selfInfo.String(), &masterSetOption)
+	_, err := ds.client.Put(ctx, ds.instanceEtcdKey, ds.selfInfo.String())
 	return err
 }
 
@@ -53,19 +45,14 @@ func (ds *EtcdDataSource) etcdHeartbeat() error {
 func (ds *EtcdDataSource) IsMaster() error {
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	masterGetOptions := etcd.GetOptions{
-		Recursive: true,
-		Quorum:    true,
-		Sort:      true,
-	}
-	resp, err := ds.keysAPI.Get(ctx, path.Join(ds.ClusterName(), instancesEtcdDir), &masterGetOptions)
+	resp, err := ds.client.Get(ctx, path.Join(ds.ClusterName(), instancesEtcdDir))
 	if err != nil {
 		return fmt.Errorf("error while getting the dir list from etcd: %s", err)
 	}
-	if len(resp.Node.Nodes) < 1 {
+	if len(resp.Kvs) < 1 {
 		return fmt.Errorf("empty list while getting the dir list from etcd")
 	}
-	if resp.Node.Nodes[0].Key == ds.instanceEtcdKey {
+	if string(resp.Kvs[0].Key) == ds.instanceEtcdKey {
 		return nil
 	}
 	return fmt.Errorf("this is not the master instance")
@@ -95,7 +82,7 @@ func (ds *EtcdDataSource) WhileMaster() error {
 func (ds *EtcdDataSource) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	_, err := ds.keysAPI.Delete(ctx, ds.instanceEtcdKey, nil)
+	_, err := ds.client.Delete(ctx, ds.instanceEtcdKey, nil)
 	return err
 }
 
@@ -107,12 +94,12 @@ func (ds *EtcdDataSource) Instances() ([]InstanceInfo, error) {
 	// These values are set by hacluster.registerOnEtcd
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	response, err := ds.keysAPI.Get(ctx, path.Join(ds.ClusterName(), instancesEtcdDir), &etcd.GetOptions{Recursive: false})
+	response, err := ds.client.Get(ctx, path.Join(ds.ClusterName(), instancesEtcdDir))
 	if err != nil {
 		return nil, err
 	}
 
-	for _, ent := range response.Node.Nodes {
+	for _, ent := range response.Kvs {
 		instanceInfoStr := ent.Value
 
 		var instanceInfo InstanceInfo

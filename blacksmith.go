@@ -12,7 +12,7 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	etcd "github.com/coreos/etcd/client"
+	etcd "github.com/coreos/etcd/clientv3"
 
 	"github.com/cafebazaar/blacksmith/datasource"
 	"github.com/cafebazaar/blacksmith/dhcp"
@@ -206,14 +206,13 @@ func main() {
 
 	// datasources
 	etcdClient, err := etcd.New(etcd.Config{
-		Endpoints:               strings.Split(*etcdFlag, ","),
-		HeaderTimeoutPerRequest: 5 * time.Second,
+		Endpoints:   strings.Split(*etcdFlag, ","),
+		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nCouldn't create etcd connection: %s\n", err)
 		os.Exit(1)
 	}
-	kapi := etcd.NewKeysAPI(etcdClient)
 
 	selfInfo := datasource.InstanceInfo{
 		IP:               serverIP,
@@ -224,7 +223,7 @@ func main() {
 		BuildTime:        buildTime,
 		ServiceStartTime: time.Now().UTC().Unix(),
 	}
-	etcdDataSource, err := datasource.NewEtcdDataSource(kapi, etcdClient,
+	etcdDataSource, err := datasource.NewEtcdDataSource(*etcdClient,
 		leaseStart, leaseRange, *clusterNameFlag, *workspacePathFlag,
 		dnsIPStrings, selfInfo)
 	if err != nil {
