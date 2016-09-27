@@ -15,6 +15,7 @@
   <script src="static/external/angular.min.js"></script>
   <script src="static/external/angular-route.min.js"></script>
   <script src="static/external/angular-resource.min.js"></script>
+  <script src="static/external/ng-file-upload.min.js"></script>
   <script src="static/external/xeditable.min.js"></script>
   <script src="static/js/utils.js"></script>
   <script src="static/js/services.js"></script>
@@ -42,6 +43,14 @@
     <div ng-view></div>
   </div>
 </div>
+
+<input type="file" ngf-select ng-model="picFile" name="file" accept="application/x-tar">
+<button ng-click="uploadPic(picFile)">Submit</button>
+
+<form action="/uploadworkspace" method="POST" enctype="multipart/form-data">
+  <input type="file" name="workspace">
+  <input type="submit" value="Upload">
+</form>
 
 </body>
 </html>

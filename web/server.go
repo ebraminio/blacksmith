@@ -56,6 +56,8 @@ func (ws *webServer) Handler() http.Handler {
 
 	mux.PathPrefix("/static/").Handler(http.FileServer(FS(false)))
 
+	mux.PathPrefix("/uploadworkspace").HandlerFunc(uploadworkspace).Methods("POST")
+
 	return mux
 }
 

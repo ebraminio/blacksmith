@@ -1,12 +1,16 @@
 package web
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/cafebazaar/blacksmith/datasource"
 	"github.com/gorilla/mux"
@@ -229,4 +233,66 @@ func (ws *webServer) DelClusterVariables(w http.ResponseWriter, r *http.Request)
 	}
 
 	io.WriteString(w, `"OK"`)
+}
+
+func uploadworkspace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		return
+	}
+
+	f, _, err := r.FormFile("workspace")
+	if err != nil {
+		http.Error(w, `{"error": "Error while upload"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	p, _ := os.Create("/tmp/dat2")
+
+	n, err := io.Copy(p, f)
+	if err != nil {
+		http.Error(w, `{"error": "Error while copying the file"}`, http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Copied %v bytes\n", n)
+}
+
+// https://gist.github.com/svett/dc27b7fb04c2549e3ada#file-untarball-go
+func untar(tarball, target string) error {
+	reader, err := os.Open(tarball)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	tarReader := tar.NewReader(reader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		path := filepath.Join(target, header.Name)
+		info := header.FileInfo()
+		if info.IsDir() {
+			if err = os.MkdirAll(path, info.Mode()); err != nil {
+				return err
+			}
+			continue
+		}
+
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(file, tarReader)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
