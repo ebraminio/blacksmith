@@ -48,6 +48,7 @@ func Untar(tarball, target string) error {
 	return nil
 }
 
+// HashFileMD5 calculates md5sum of a file
 // http://www.mrwaggel.be/post/generate-md5-hash-of-a-file/
 func HashFileMD5(filePath string) (string, error) {
 	// Initialize variable returnMD5String now in case an error has to be returned

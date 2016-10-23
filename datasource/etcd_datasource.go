@@ -24,7 +24,10 @@ const (
 )
 
 // ActiveWorkspaceHashKey is cluster variable key of active workspace hash
-const ActiveWorkspaceHashKey = "activeWorkspaceHash"
+const ActiveWorkspaceHashKey = "active-workspace-hash"
+
+// PreviousWorkspaceHashKey is cluster variable key of active workspace hash
+const PreviousWorkspaceHashKey = "previous-workspace-hash"
 
 // EtcdDataSource implements MasterDataSource interface using etcd as it's
 // datasource

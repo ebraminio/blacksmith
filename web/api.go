@@ -237,13 +237,14 @@ func (ws *webServer) DelClusterVariables(w http.ResponseWriter, r *http.Request)
 	io.WriteString(w, `"OK"`)
 }
 
-var workspaceUploadLock = &sync.Mutex{}
+var workspaceUploadRevertLock = &sync.Mutex{}
 
 func (ws *webServer) WorkspaceUploadHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	hash := vars["hash"]
 
-	workspaceUploadLock.Lock()
+	workspaceUploadRevertLock.Lock()
+	defer workspaceUploadRevertLock.Unlock()
 
 	workspacePath := ws.ds.WorkspacePath()
 
@@ -273,7 +274,7 @@ func (ws *webServer) WorkspaceUploadHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	os.Remove(workspacePath)
+	err = os.Remove(workspacePath)
 	if err != nil {
 		log.Info("Failed to unlink \"current\" symlink, but it is a no issue as it could be the first initialization")
 	}
@@ -293,7 +294,10 @@ func (ws *webServer) WorkspaceUploadHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// TODO: This casting doesn't look good, put the interesting method on more accessible place
 	ws.ds.(*datasource.EtcdDataSource).FillEtcdFromWorkspace()
+
+	prevHash, _ := ws.ds.GetClusterVariable(datasource.ActiveWorkspaceHashKey)
 
 	err = ws.ds.SetClusterVariable(datasource.ActiveWorkspaceHashKey, hash)
 	if err != nil {
@@ -301,7 +305,53 @@ func (ws *webServer) WorkspaceUploadHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	io.WriteString(w, `"OK"`)
+	// if previous hash is equal with the current one, don't lose the old one at least
+	if prevHash != hash {
+		err = ws.ds.SetClusterVariable(datasource.PreviousWorkspaceHashKey, prevHash)
+		if err != nil {
+			http.Error(w, `{"error": "Unable to set current workspace hash"}`, http.StatusInternalServerError)
+			return
+		}
+	}
 
-	workspaceUploadLock.Unlock()
+	io.WriteString(w, `"OK"`)
+}
+
+func (ws *webServer) WorkspaceRevertHandler(w http.ResponseWriter, r *http.Request) {
+	workspaceUploadRevertLock.Lock()
+	defer workspaceUploadRevertLock.Unlock()
+
+	workspacePath := ws.ds.WorkspacePath()
+	workspaceParentPath := path.Dir(workspacePath)
+
+	hash, err := ws.ds.GetClusterVariable(datasource.ActiveWorkspaceHashKey)
+	if err != nil {
+		http.Error(w, `{"error": "No active workspace were set"}`, http.StatusInternalServerError)
+		return
+	}
+
+	prevHash, err := ws.ds.GetClusterVariable(datasource.PreviousWorkspaceHashKey)
+	if err != nil {
+		http.Error(w, `{"error": "No previous workspace were set"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if hash == prevHash {
+
+	}
+
+	err = os.Remove(workspacePath)
+	if err != nil {
+		http.Error(w, `{"error": "An error happened on workspace deletion"}`, http.StatusInternalServerError)
+		return
+	}
+
+	prevWorkspacePath := path.Join(workspaceParentPath, prevHash)
+	err = os.Symlink(prevWorkspacePath, workspacePath)
+	if err != nil {
+		http.Error(w, `{"error": "An error happened on revert workspace symlink"}`, http.StatusInternalServerError)
+		return
+	}
+
+	io.WriteString(w, `"OK"`)
 }
